@@ -41,18 +41,16 @@ logChannelId: <ID2>
 ## ▶️ Usage
 Run a command in Discord: anycommand should works
 
-**For example: **
-gamemode
+** For example: **
+
+*gamemode*
 ------------------------------------------------------------------------------------------------------------------------------
 Command Help: /gamemode
-
 Description: Change player gamemode.
-
 Usage(s);
-
 /gamemode <survival|creative|adventure|spectator> [player] - Sets the gamemode of either you or another player if specified
 ------------------------------------------------------------------------------------------------------------------------------
-If the command generates a lot of output, it will be automatically chunked to fit Discord’s limits.
+**If the command generates a lot of output, it will be automatically chunked to fit Discord’s limits.**
 
 ## 🧪 Compatibility
 | Server Type | Supported | Notes                       |
