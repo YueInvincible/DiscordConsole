@@ -9,6 +9,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.*;
 
@@ -26,13 +28,14 @@ public class DiscordConsolePlugin extends JavaPlugin {
         consoleChannelId = getConfig().getLong("consoleChannelId");
         logChannelId = getConfig().getLong("logChannelId");
 
-        // Get all log
-        Logger rootLogger = Logger.getLogger("");
-        rootLogger.setLevel(Level.ALL);
+        // Handler
+        Logger serverLogger = Bukkit.getServer().getLogger();
+        serverLogger.setLevel(Level.ALL);
         LogHandler handler = new LogHandler(logQueue);
         handler.setLevel(Level.ALL);
-        rootLogger.addHandler(handler);
+        serverLogger.addHandler(handler);
 
+        // Get discord bot
         try {
             jda = JDABuilder.createDefault(DISCORD_TOKEN)
                     .enableIntents(GatewayIntent.MESSAGE_CONTENT)
@@ -44,49 +47,55 @@ public class DiscordConsolePlugin extends JavaPlugin {
             getLogger().log(Level.SEVERE, "Cannot start the discord bot", e);
         }
 
+        // Scheduler
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::sendPendingLogs, 600L, 600L);
     }
 
     @Override
     public void onDisable() {
         sendPendingLogs();
-        if (jda != null) {
-            jda.shutdown();
-        }
+        if (jda != null) jda.shutdown();
     }
-
 
     public long getConsoleChannelId() {
         return consoleChannelId;
     }
 
-    // Public ChannelId
+    // Drains current logQueue into a List and returns
+    public List<String> drainLogs() {
+        List<String> logs = new ArrayList<>();
+        String line;
+        while ((line = logQueue.poll()) != null) {
+            logs.add(line);
+        }
+        return logs;
+    }
+
+    // Send log
     public void sendPendingLogs() {
         if (logQueue.isEmpty() || jda == null) return;
-
         TextChannel channel = jda.getTextChannelById(logChannelId);
         if (channel == null) {
-            getLogger().warning("Could not find channel!");
+            getLogger().warning("Could not find log discord channel!");
             return;
         }
 
         StringBuilder builder = new StringBuilder();
-        String line;
-        while ((line = logQueue.poll()) != null) {
-            builder.append(line).append("\n");
+        for (String msg : drainLogs()) {
+            builder.append(msg).append("\n");
         }
-        String allLogs = builder.toString();
-        if (allLogs.isEmpty()) return;
-        //max 1900 (Discord text must <2000)
+        sendChunks(channel, builder.toString());
+    }
+
+    // Helper gửi chunk nhỏ hơn 1900 ký tự
+    private void sendChunks(TextChannel channel, String allLogs) {
         int maxLen = 1900;
         int idx = 0;
         while (idx < allLogs.length()) {
             int end = Math.min(idx + maxLen, allLogs.length());
             if (end < allLogs.length()) {
                 int lastNewline = allLogs.lastIndexOf('\n', end);
-                if (lastNewline > idx) {
-                    end = lastNewline + 1;
-                }
+                if (lastNewline > idx) end = lastNewline + 1;
             }
             String chunk = allLogs.substring(idx, end);
             channel.sendMessage("**" + chunk + "**").queue();
@@ -119,3 +128,4 @@ public class DiscordConsolePlugin extends JavaPlugin {
         @Override public void close() throws SecurityException {}
     }
 }
+
