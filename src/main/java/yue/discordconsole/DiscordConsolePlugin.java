@@ -5,127 +5,138 @@ import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import org.bukkit.Bukkit;
+import org.bukkit.event.server.ServerCommandEvent;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitRunnable;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.util.ArrayList;
-import java.util.List;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.logging.*;
+import java.util.regex.Pattern;
 
 public class DiscordConsolePlugin extends JavaPlugin {
-    private static final String DISCORD_TOKEN = "YOUR_DISCORD_TOKEN";
+    private static final String DISCORD_TOKEN = "Discord_Bot_Token";
+    private static final long INITIAL_INTERVAL = 100L;  // 5s in ticks
+    private static final long NORMAL_INTERVAL = 400L;   // 20s in ticks
+    private static final int CHUNK_LIMIT = 1900;
+    private static final Pattern ANSI_PATTERN = Pattern.compile("(\\u001B\\[[;\\d]*m)|(\\[[0-9;]+m)");
 
-    private long consoleChannelId;
-    private long logChannelId;
-    private JDA jda;
     private final ConcurrentLinkedQueue<String> logQueue = new ConcurrentLinkedQueue<>();
+    private PrintStream originalOut;
+    private JDA jda;
+    private TextChannel discordLogChannel;
+    private long discordCommandChannelId;
+
+    @Override
+    public void onLoad() {
+        // Redirect System.out and System.err early
+        originalOut = System.out;
+        TeeStream tee = new TeeStream(originalOut);
+        System.setOut(new PrintStream(tee, true));
+        System.setErr(new PrintStream(tee, true));
+    }
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        consoleChannelId = getConfig().getLong("consoleChannelId");
-        logChannelId = getConfig().getLong("logChannelId");
+        long logChannelId = getConfig().getLong("logChannelId");
+        discordCommandChannelId = getConfig().getLong("consoleChannelId");
 
-        // Handler
-        Logger serverLogger = Bukkit.getServer().getLogger();
-        serverLogger.setLevel(Level.ALL);
-        LogHandler handler = new LogHandler(logQueue);
-        handler.setLevel(Level.ALL);
-        serverLogger.addHandler(handler);
-
-        // Get discord bot
         try {
             jda = JDABuilder.createDefault(DISCORD_TOKEN)
                     .enableIntents(GatewayIntent.MESSAGE_CONTENT)
-                    .addEventListeners(new DiscordCommandListener(this))
                     .build();
             jda.awaitReady();
-            getLogger().info("Discord bot is ready.");
+            discordLogChannel = jda.getTextChannelById(logChannelId);
+            jda.addEventListener(new DiscordCommandListener(this));
         } catch (Exception e) {
-            getLogger().log(Level.SEVERE, "Cannot start the discord bot", e);
+            getLogger().severe("Failed to start Discord bot: " + e.getMessage());
         }
 
-        // Scheduler
-        Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::sendPendingLogs, 600L, 600L);
+        // Initial flush every 5s until empty
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                flushLogs();
+                if (logQueue.isEmpty()) cancel();
+            }
+        }.runTaskTimerAsynchronously(this, 0L, INITIAL_INTERVAL);
+
+        // Ongoing flush every 20s
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                flushLogs();
+            }
+        }.runTaskTimerAsynchronously(this, INITIAL_INTERVAL, NORMAL_INTERVAL);
     }
 
     @Override
     public void onDisable() {
-        sendPendingLogs();
+        flushLogs();
+        System.setOut(originalOut);
         if (jda != null) jda.shutdown();
     }
 
-    public long getConsoleChannelId() {
-        return consoleChannelId;
+    void clearLogs() {
+        logQueue.clear();
     }
 
-    // Drains current logQueue into a List and returns
-    public List<String> drainLogs() {
-        List<String> logs = new ArrayList<>();
+    String drainAllLogs() {
+        StringBuilder sb = new StringBuilder();
         String line;
         while ((line = logQueue.poll()) != null) {
-            logs.add(line);
+            sb.append(line).append("\n");
         }
-        return logs;
+        return sb.toString();
     }
 
-    // Send log
-    public void sendPendingLogs() {
-        if (logQueue.isEmpty() || jda == null) return;
-        TextChannel channel = jda.getTextChannelById(logChannelId);
-        if (channel == null) {
-            getLogger().warning("Could not find log discord channel!");
-            return;
-        }
-
-        StringBuilder builder = new StringBuilder();
-        for (String msg : drainLogs()) {
-            builder.append(msg).append("\n");
-        }
-        sendChunks(channel, builder.toString());
-    }
-
-    // Helper gửi chunk nhỏ hơn 1900 ký tự
-    private void sendChunks(TextChannel channel, String allLogs) {
-        int maxLen = 1900;
-        int idx = 0;
-        while (idx < allLogs.length()) {
-            int end = Math.min(idx + maxLen, allLogs.length());
-            if (end < allLogs.length()) {
-                int lastNewline = allLogs.lastIndexOf('\n', end);
-                if (lastNewline > idx) end = lastNewline + 1;
-            }
-            String chunk = allLogs.substring(idx, end);
-            channel.sendMessage("**" + chunk + "**").queue();
-            idx = end;
+    private void flushLogs() {
+        if (discordLogChannel == null) return;
+        String all = drainAllLogs();
+        if (all.isEmpty()) return;
+        // Chunk and send
+        for (int i = 0; i < all.length(); i += CHUNK_LIMIT) {
+            int end = Math.min(i + CHUNK_LIMIT, all.length());
+            String chunk = stripAnsi(all.substring(i, end));
+            discordLogChannel.sendMessage("```" + chunk + "```").queue();
         }
     }
 
-    private static class LogHandler extends Handler {
-        private final ConcurrentLinkedQueue<String> queue;
-        private final Formatter formatter = new SimpleFormatter();
+    private static String stripAnsi(String input) {
+        return ANSI_PATTERN.matcher(input).replaceAll("");
+    }
 
-        public LogHandler(ConcurrentLinkedQueue<String> queue) {
-            this.queue = queue;
-            setFormatter(formatter);
+    long getDiscordCommandChannelId() {
+        return discordCommandChannelId;
+    }
+
+    // TeeStream to capture console output
+    private class TeeStream extends OutputStream {
+        private final PrintStream original;
+        private final StringBuilder buf = new StringBuilder();
+
+        TeeStream(PrintStream original) {
+            this.original = original;
         }
 
         @Override
-        public void publish(LogRecord record) {
-            if (!isLoggable(record)) return;
-            StringBuilder sb = new StringBuilder(formatter.format(record));
-            if (record.getThrown() != null) {
-                StringWriter sw = new StringWriter();
-                record.getThrown().printStackTrace(new PrintWriter(sw));
-                sb.append(sw.toString());
+        public void write(int b) {
+            original.write(b);
+            buf.append((char) b);
+            if (b == '\n') {
+                String line = buf.toString();
+                buf.setLength(0);
+                line = stripAnsi(line);
+                if (!line.trim().isEmpty()) {
+                    logQueue.offer(line);
+                    // Also fire ServerCommandEvent if it's a command prefix
+                    if (line.startsWith("CONSOLE issued server command")) {
+                        String cmd = line.substring(line.indexOf(':') + 1).trim();
+                        Bukkit.getPluginManager().callEvent(new ServerCommandEvent(Bukkit.getServer().getConsoleSender(), cmd));
+                    }
+                }
             }
-            queue.offer(sb.toString());
         }
-
-        @Override public void flush() {}
-        @Override public void close() throws SecurityException {}
     }
 }
-
