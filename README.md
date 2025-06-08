@@ -40,7 +40,8 @@ logChannelId: <ID2>
 
 ## ▶️ Usage
 Run a command in Discord: anycommand should works
-For example: 
+
+**For example: **
 gamemode
 ------------------------------------------------------------------------------------------------------------------------------
 Command Help: /gamemode
