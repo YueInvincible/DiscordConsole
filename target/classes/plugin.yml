@@ -1,0 +1,5 @@
+name: DiscordConsolePlugin
+version: 1.0
+author: yue
+main: yue.discordconsole.DiscordConsolePlugin
+api-version: "1.20"
